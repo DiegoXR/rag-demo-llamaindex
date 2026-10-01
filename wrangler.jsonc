@@ -1,0 +1,48 @@
+// rag-demo-llamaindex — a Worker in front of a Python container.
+// Docs: https://developers.cloudflare.com/containers/
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "rag-demo-llamaindex",
+	// Pinned: a command run from another login fails instead of deploying elsewhere.
+	"account_id": "4f4d0336b4b7bbf176c4a4e3ca67072f",
+	"main": "src/index.js",
+	// Cannot be newer than the workerd bundled with the installed wrangler.
+	"compatibility_date": "2026-09-15",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+
+	// No public URL of any kind: the only caller is hubworld, through a service
+	// binding. No routes and no custom domains either.
+	"workers_dev": false,
+	"preview_urls": false,
+
+	// Three blocks make a container, and they must agree on one class name:
+	//
+	//   containers      -> which image to run, how big, how many at most
+	//   durable_objects -> the binding the Worker calls (env.RAG_CONTAINER)
+	//   exports         -> registers RagContainer as a SQLite-backed Durable Object
+	//
+	// One environment only (no `env` blocks): the hub binds to a single Worker name.
+	"containers": [
+		{
+			// Explicit, so the application name never depends on the Worker name.
+			"name": "rag-demo-llamaindex",
+			"class_name": "RagContainer",
+			// wrangler runs `docker build` on this file at deploy time.
+			"image": "./container/Dockerfile",
+			"image_build_context": "./container",
+			// Smallest size (1/16 vCPU, 256 MiB). Raise to "basic" once LlamaIndex is in.
+			"instance_type": "lite",
+			// Hard cap on cost.
+			"max_instances": 1
+		}
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "RAG_CONTAINER", "class_name": "RagContainer" }]
+	},
+	"exports": {
+		"RagContainer": { "type": "durable-object", "storage": "sqlite" }
+	}
+}
