@@ -1,3 +1,0 @@
-INFO:     127.0.0.1:61683 - "GET /health HTTP/1.1" 200 OK
-{"event": "bridge_error", "path": "/documents", "error": "ConnectError", "detail": "[WinError 10061] No connection could be made because the target machine actively refused it"}
-INFO:     127.0.0.1:61689 - "GET /documents HTTP/1.1" 502 Bad Gateway
