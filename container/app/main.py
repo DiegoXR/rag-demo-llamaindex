@@ -18,10 +18,9 @@ import json
 import re
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Literal
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -52,7 +51,22 @@ def engine():
     return _engine
 
 
-_executor = ThreadPoolExecutor(max_workers=4)
+def log(event: str, **fields) -> None:
+    """One JSON line per event: the container's stdout lands in Workers Logs."""
+    print(json.dumps({"event": event, **fields}, ensure_ascii=False))
+
+
+def _user(request: Request) -> str:
+    # Set by the hub (the Access email); for attribution only — the hub enforces quotas.
+    return request.headers.get("x-hub-user", "unknown")
+
+
+# The bridge (Workers AI, Vectorize, R2) failing is an upstream failure: answer 502
+# with a readable message instead of FastAPI's bare 500.
+@app.exception_handler(httpx.HTTPError)
+async def bridge_failed(request: Request, exc: httpx.HTTPError):
+    log("bridge_error", path=request.url.path, error=type(exc).__name__, detail=str(exc)[:300])
+    return JSONResponse({"detail": "A storage or model service failed; try again."}, status_code=502)
 
 
 # --- Health and metadata --------------------------------------------------------
@@ -68,8 +82,9 @@ def meta():
     return {
         "id": "rag-demo-llamaindex",
         "title": "LlamaIndex over your Markdown",
-        "description": "Upload .md documents and chat with them. A Router Query Engine picks "
-        "vector search for specific questions or a summary over every document.",
+        "description": "Upload .md documents and chat with them. A LlamaIndex agent remembers "
+        "the conversation and picks vector search for specific questions or a summary over "
+        "every document.",
         "stack": ["Python", "FastAPI", "LlamaIndex", "Workers AI", "Vectorize", "R2", "Cloudflare Containers"],
         "repo": "https://github.com/DiegoXR/rag-demo-llamaindex",
     }
@@ -100,12 +115,16 @@ async def upload_document(request: Request, title: str):
     except UnicodeDecodeError:
         raise HTTPException(400, "document must be UTF-8 markdown")
 
-    existing = {d["doc_id"] for d in bridge_client.list_docs()}
+    existing = {d["doc_id"] for d in await asyncio.to_thread(bridge_client.list_docs)}
     if doc_id not in existing and len(existing) >= MAX_DOCS:
         raise HTTPException(409, f"at most {MAX_DOCS} documents; delete one first")
 
-    chunks = await _run(engine().ingest, doc_id, title, text)
-    return {"doc_id": doc_id, "title": title, "chunks": chunks, "replaced": doc_id in existing}
+    started = time.monotonic()
+    chunks = await asyncio.to_thread(engine().ingest, doc_id, title, text)
+    replaced = doc_id in existing
+    log("ingest", user=_user(request), doc_id=doc_id, bytes=len(body), chunks=chunks,
+        replaced=replaced, ms=int((time.monotonic() - started) * 1000))
+    return {"doc_id": doc_id, "title": title, "chunks": chunks, "replaced": replaced}
 
 
 @app.get("/documents")
@@ -114,16 +133,13 @@ def list_documents():
 
 
 @app.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str):
+async def delete_document(request: Request, doc_id: str):
     if not re.fullmatch(r"[a-z0-9-]{1,50}", doc_id):
         raise HTTPException(404, "not found")
-    if not await _run(engine().delete, doc_id):
+    if not await asyncio.to_thread(engine().delete, doc_id):
         raise HTTPException(404, "not found")
+    log("delete", user=_user(request), doc_id=doc_id)
     return {"deleted": doc_id}
-
-
-async def _run(fn, *args):
-    return await asyncio.get_running_loop().run_in_executor(_executor, fn, *args)
 
 
 # --- Chat -----------------------------------------------------------------------
@@ -144,55 +160,80 @@ def sse(event: dict) -> str:
 
 
 @app.post("/chat")
-def chat(body: ChatRequest):
+async def chat(request: Request, body: ChatRequest):
     if not body.messages or body.messages[-1].role != "user":
         raise HTTPException(400, "the last message must come from the user")
     if len(body.messages) > MAX_MESSAGES:
         return JSONResponse({"error": f"at most {MAX_MESSAGES} messages"}, status_code=413)
     if sum(len(m.content) for m in body.messages) > MAX_INPUT_CHARS:
         return JSONResponse({"error": f"at most {MAX_INPUT_CHARS} characters"}, status_code=413)
-
-    # The router answers one question; earlier turns are not sent to the LLM yet.
-    question = body.messages[-1].content
-    return StreamingResponse(_answer(question), media_type="text/event-stream")
+    return StreamingResponse(_answer(body.messages, _user(request)), media_type="text/event-stream")
 
 
-def _answer(question: str):
-    deadline = time.monotonic() + TIMEOUT_S
+def _sources(nodes) -> list[dict]:
+    """Search results keep one entry per chunk, with its score; a summary read
+    every chunk of every document, so it is listed once per document instead."""
+    out, summarized = [], set()
+    for n in nodes:
+        title = n.node.metadata.get("title", "")
+        if n.score is None:
+            if title in summarized:
+                continue
+            summarized.add(title)
+        out.append({
+            "title": title,
+            "snippet": n.node.get_content()[:300],
+            "score": round(n.score, 3) if n.score is not None else None,
+        })
+    return out
+
+
+async def _answer(messages: list[Message], user: str):
+    from llama_index.core.agent.workflow import AgentStream
+    from llama_index.core.llms import ChatMessage
+
+    started = time.monotonic()
+    # Off the event loop: the first build reads every document from R2 for the summary.
+    run = await asyncio.to_thread(engine().build_agent)
+    history = [ChatMessage(role=m.role, content=m.content) for m in messages[:-1]]
+    handler = run.agent.run(
+        user_msg=messages[-1].content,
+        chat_history=history,
+        max_iterations=engine().MAX_AGENT_ITERATIONS,
+        early_stopping_method="generate",
+    )
+    status = "ok"
     try:
-        router, tokens = engine().build_query_engine()
-        # Routing + retrieval happen before the first token; bound them too.
-        response = _executor.submit(router.query, question).result(timeout=TIMEOUT_S)
+        async with asyncio.timeout(TIMEOUT_S):
+            async for event in handler.stream_events():
+                # Text deltas of the final answer. While the agent is only choosing a
+                # tool, deltas are empty.
+                if isinstance(event, AgentStream) and event.delta:
+                    yield sse({"type": "token", "text": event.delta})
+            await handler
 
-        if hasattr(response, "response_gen"):
-            for text in response.response_gen:
-                if time.monotonic() > deadline:
-                    yield sse({"type": "error", "message": "The answer took too long"})
-                    return
-                yield sse({"type": "token", "text": text})
-        else:
-            yield sse({"type": "token", "text": str(response)})
-
-        sources = [
-            {
-                "title": node.metadata.get("title", ""),
-                "snippet": node.get_content()[:300],
-                "score": round(node.score, 3) if node.score is not None else None,
-            }
-            for node in response.source_nodes
-        ]
-        yield sse({"type": "sources", "sources": sources})
-        yield sse(
-            {
-                "type": "done",
-                "usage": {
-                    "input_tokens": tokens.prompt_llm_token_count,
-                    "output_tokens": tokens.completion_llm_token_count,
-                },
-            }
-        )
-    except FutureTimeout:
+        yield sse({"type": "sources", "sources": _sources(run.sources)})
+        yield sse({
+            "type": "done",
+            "usage": {
+                "input_tokens": run.tokens.prompt_llm_token_count,
+                "output_tokens": run.tokens.completion_llm_token_count,
+            },
+        })
+    except TimeoutError:
+        status = "timeout"
         yield sse({"type": "error", "message": "The answer took too long"})
-    except Exception as e:  # never leak details (keys never reach here, but stay terse)
-        print(json.dumps({"chat_error": type(e).__name__, "detail": str(e)[:300]}))
+    except Exception as e:  # terse to the caller; details go to the logs
+        status = "error"
+        log("chat_error", user=user, error=type(e).__name__, detail=str(e)[:300])
         yield sse({"type": "error", "message": "The demo could not answer right now"})
+    finally:
+        # Timeout, error, or the hub aborting (the user left): stop the agent so an
+        # answer nobody will read stops spending tokens.
+        if not handler.done():
+            status = "cancelled" if status == "ok" else status
+            await handler.cancel_run()
+        log("chat", user=user, status=status, messages=len(messages), tools=run.tools_used,
+            sources=len(run.sources), input_tokens=run.tokens.prompt_llm_token_count,
+            output_tokens=run.tokens.completion_llm_token_count,
+            ms=int((time.monotonic() - started) * 1000))

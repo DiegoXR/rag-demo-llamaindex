@@ -2,21 +2,25 @@
 
 Ingest:  markdown -> MarkdownNodeParser (by heading) -> SentenceSplitter
          -> Workers AI embeddings -> Vectorize; the original goes to R2.
-Answer:  a RouterQueryEngine picks one of two tools for each question —
-           "vector":  top-k chunks from Vectorize, for specific questions;
-           "summary": every document read from R2, for "summarize ..." requests.
+Answer:  a FunctionAgent with the conversation history and two tools —
+           search_documents:    top-k chunks from Vectorize, for specific questions;
+           summarize_documents: a SummaryIndex over every document read from R2.
+         The agent decides which tool to call (or none, for a greeting), and
+         rewrites follow-ups like "and for sale items?" using the history.
 """
 
+import asyncio
 import threading
+from dataclasses import dataclass, field
 
 import tiktoken
 from llama_index.core import Document, SummaryIndex, VectorStoreIndex
+from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.callbacks import CallbackManager, TokenCountingHandler
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
-from llama_index.core.query_engine import RouterQueryEngine
-from llama_index.core.selectors import LLMSingleSelector
-from llama_index.core.tools import QueryEngineTool
+from llama_index.core.schema import NodeWithScore
+from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
 
 from app import bridge_client
@@ -37,10 +41,16 @@ embed_model = WorkersAIEmbedding()
 vector_store = VectorizeVectorStore()
 
 SYSTEM_PROMPT = (
-    "You answer questions about the documents provided as context. "
-    "Answer in the language of the question. If the context does not contain the "
-    "answer, say so instead of guessing."
+    "You are the assistant of a document collection uploaded by the user. "
+    "Use search_documents for questions about specific facts, and summarize_documents "
+    "when asked for a summary or an overview. Answer only from what the tools return; "
+    "if they do not contain the answer, say so instead of guessing. "
+    "Always answer in the language of the user's last message."
 )
+
+# Tool-call rounds per answer. One is the norm; the cap stops a confused agent from
+# looping (and spending) — on reaching it the agent is forced to answer.
+MAX_AGENT_ITERATIONS = 3
 
 
 def _splitters():
@@ -116,11 +126,21 @@ def _summary_index_nodes():
 # --- Answer -------------------------------------------------------------------
 
 
-def build_query_engine():
-    """A router over both tools, with its own token counter.
+@dataclass
+class AgentRun:
+    """One answer's agent plus what its tools found, for the `sources` event and logs."""
 
-    Built per request (it is cheap: no data is loaded except the cached summary
-    nodes) so concurrent requests never share a token count.
+    agent: FunctionAgent
+    tokens: TokenCountingHandler
+    sources: list[NodeWithScore] = field(default_factory=list)
+    tools_used: list[str] = field(default_factory=list)
+
+
+def build_agent() -> AgentRun:
+    """A FunctionAgent over both tools, with its own token counter and sources list.
+
+    Built per request (cheap: nothing is loaded except the cached summary nodes) so
+    concurrent requests never share a token count or a list of sources.
     """
     token_counter = TokenCountingHandler(tokenizer=tiktoken.encoding_for_model(LLM_MODEL).encode)
     callbacks = CallbackManager([token_counter])
@@ -132,35 +152,50 @@ def build_query_engine():
         max_tokens=MAX_TOKENS,
         timeout=TIMEOUT_S,
         max_retries=1,
-        system_prompt=SYSTEM_PROMPT,
         callback_manager=callbacks,
     )
 
-    vector_engine = VectorStoreIndex.from_vector_store(
-        vector_store, embed_model=embed_model, callback_manager=callbacks
-    ).as_query_engine(llm=llm, similarity_top_k=TOP_K, streaming=True)
+    retriever = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model).as_retriever(
+        similarity_top_k=TOP_K
+    )
+    summary_engine = SummaryIndex(_summary_index_nodes()).as_query_engine(
+        llm=llm, response_mode="tree_summarize"
+    )
 
-    summary_engine = SummaryIndex(
-        _summary_index_nodes(), callback_manager=callbacks
-    ).as_query_engine(llm=llm, response_mode="tree_summarize", streaming=True)
+    run = AgentRun(agent=None, tokens=token_counter)  # type: ignore[arg-type]
 
-    router = RouterQueryEngine(
-        selector=LLMSingleSelector.from_defaults(llm=llm),
-        query_engine_tools=[
-            QueryEngineTool.from_defaults(
-                query_engine=vector_engine,
-                name="vector",
-                description="Answers specific questions about details in the documents.",
-            ),
-            QueryEngineTool.from_defaults(
-                query_engine=summary_engine,
-                name="summary",
-                description="Summarizes the documents or gives an overview of everything in them.",
-            ),
+    # Tools return text for the agent and record their nodes as the answer's sources.
+    # The work is blocking HTTP through the bridge, so it runs off the event loop.
+    async def search_documents(query: str) -> str:
+        """Search the documents for passages relevant to a specific question.
+
+        `query` must be a standalone question, with any context from the
+        conversation already filled in."""
+        run.tools_used.append("search_documents")
+        nodes = await asyncio.to_thread(retriever.retrieve, query)
+        run.sources.extend(nodes)
+        if not nodes:
+            return "No documents matched."
+        return "\n\n".join(f"[{n.node.metadata.get('title', '')}]\n{n.node.get_content()}" for n in nodes)
+
+    async def summarize_documents(focus: str = "") -> str:
+        """Summarize every uploaded document, optionally around a focus topic."""
+        run.tools_used.append("summarize_documents")
+        response = await asyncio.to_thread(
+            summary_engine.query, f"Summarize the documents. Focus: {focus}" if focus else "Summarize the documents."
+        )
+        run.sources.extend(response.source_nodes)
+        return str(response)
+
+    run.agent = FunctionAgent(
+        tools=[
+            FunctionTool.from_defaults(async_fn=search_documents),
+            FunctionTool.from_defaults(async_fn=summarize_documents),
         ],
         llm=llm,
+        system_prompt=SYSTEM_PROMPT,
     )
-    # RouterQueryEngine resets the LLM's callback manager to the global default;
-    # every engine above shares this one LLM object, so restoring it here is enough.
-    llm.callback_manager = callbacks
-    return router, token_counter
+    # FunctionAgent resets the LLM's callback manager to the global default; the
+    # agent and the summary engine share this one LLM, so restoring it here is enough.
+    run.agent.llm.callback_manager = callbacks
+    return run
