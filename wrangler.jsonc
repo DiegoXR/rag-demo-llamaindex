@@ -1,4 +1,4 @@
-// rag-demo-llamaindex — a Worker in front of a Python container.
+// rag-demo-llamaindex — a Worker in front of a Python container running LlamaIndex.
 // Docs: https://developers.cloudflare.com/containers/
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
@@ -18,6 +18,27 @@
 	"workers_dev": false,
 	"preview_urls": false,
 
+	"vars": {
+		"LLM_MODEL": "gpt-4o-mini",
+		// Multilingual, 1024 dimensions — must match the Vectorize index. Changing it
+		// means re-indexing every document (the originals are kept in R2 for that).
+		"EMBED_MODEL": "@cf/baai/bge-m3"
+	},
+
+	// Bindings used by the bridge (src/bridge.js) on behalf of the container.
+	"ai": { "binding": "AI", "remote": true },
+	"vectorize": [{ "binding": "VECTORIZE", "index_name": "rag-demo-llamaindex", "remote": true }],
+	"r2_buckets": [{ "binding": "DOCS", "bucket_name": "rag-demo-llamaindex-docs", "remote": true }],
+	// From the account's shared Secrets Store. Read with `await env.X.get()`.
+	// `wrangler dev` cannot read the production store; it uses a local one kept in
+	// this project's .wrangler/state. Fill it once, from this folder (wrangler
+	// prompts for the value):
+	//   npx wrangler secrets-store secret create f3dd1787ab7448659671ef084d44a023 --name OPENAI_TOKEN --scopes workers
+	"secrets_store_secrets": [
+		{ "binding": "OPENAI_API_KEY", "store_id": "f3dd1787ab7448659671ef084d44a023", "secret_name": "OPENAI_TOKEN" },
+		{ "binding": "HUB_TOKEN", "store_id": "f3dd1787ab7448659671ef084d44a023", "secret_name": "HUB_TOKEN" }
+	],
+
 	// Three blocks make a container, and they must agree on one class name:
 	//
 	//   containers      -> which image to run, how big, how many at most
@@ -33,8 +54,8 @@
 			// wrangler runs `docker build` on this file at deploy time.
 			"image": "./container/Dockerfile",
 			"image_build_context": "./container",
-			// Smallest size (1/16 vCPU, 256 MiB). Raise to "basic" once LlamaIndex is in.
-			"instance_type": "lite",
+			// 1/4 vCPU, 1 GiB: "lite" (256 MiB) is too small to import LlamaIndex.
+			"instance_type": "basic",
 			// Hard cap on cost.
 			"max_instances": 1
 		}
@@ -44,5 +65,11 @@
 	},
 	"exports": {
 		"RagContainer": { "type": "durable-object", "storage": "sqlite" }
+	},
+
+	// Windows cannot run containers under `wrangler dev`; locally the Worker only
+	// serves the bridge (see LOCAL_BRIDGE in src/index.js) and FastAPI runs on uvicorn.
+	"dev": {
+		"enable_containers": false
 	}
 }
