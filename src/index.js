@@ -55,6 +55,9 @@ export default {
 		// request never wakes it.
 		const expected = await env.HUB_TOKEN.get();
 		if (!expected || request.headers.get('x-hub-token') !== expected) {
+			// The only request the container never sees, so it is logged here. Accepted
+			// requests are logged by the container itself, with more detail.
+			console.log(JSON.stringify({ event: 'unauthorized', path: url.pathname, method: request.method }));
 			return Response.json({ error: 'unauthorized' }, { status: 401 });
 		}
 
@@ -64,9 +67,6 @@ export default {
 				return Response.json({ error: `document must be 1–${MAX_DOC_BYTES} bytes` }, { status: 413 });
 			}
 		}
-
-		// Logged for attribution only; the hub enforces quotas.
-		console.log(JSON.stringify({ path: url.pathname, user: request.headers.get('x-hub-user') }));
 
 		// One named instance for everyone.
 		const container = env.RAG_CONTAINER.getByName('main');

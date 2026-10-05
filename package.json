@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:bridge": "wrangler dev --port 8787 --var LOCAL_BRIDGE:1",
-    "dev:api": "cd container && set BRIDGE_URL=http://localhost:8787/__bridge&& .venv\\Scripts\\uvicorn app.main:app --reload --port 8080",
+    "dev:api": "cd container && uv run uvicorn app.main:app --reload --port 8080",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
   },

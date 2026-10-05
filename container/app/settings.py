@@ -6,9 +6,10 @@ reasonable (see "Cost limits inside the demo" in the portfolio plan).
 
 import os
 
-# The bridge: the Worker intercepts requests to this host and serves them with its
-# bindings (src/bridge.js). Locally it points at `wrangler dev` instead.
-BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge.internal").rstrip("/")
+# The bridge (src/bridge.js): the Worker serves these requests with its bindings.
+# The default is local development (`npm run dev:bridge`); the Dockerfile sets
+# http://bridge.internal, the host the Container class intercepts in production.
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8787/__bridge").rstrip("/")
 
 # Passed by the Worker at start time from wrangler.jsonc `vars`, so a model change
 # never needs a new image.
@@ -20,6 +21,9 @@ TOP_K = 4                 # chunks retrieved per question
 MAX_INPUT_CHARS = 4_000   # total characters across the messages sent
 MAX_MESSAGES = 10         # messages per request
 TIMEOUT_S = 30            # whole answer, retrieval included
+# Tool-call rounds per answer. One is the norm; the cap stops a confused agent from
+# looping (and spending) — on reaching it the agent is forced to answer.
+MAX_AGENT_ITERATIONS = 3
 
 # Document limits.
 MAX_DOC_BYTES = 200_000   # same value checked by the Worker before waking the container

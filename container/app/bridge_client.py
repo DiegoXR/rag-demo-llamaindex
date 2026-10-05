@@ -37,8 +37,8 @@ def upsert_vectors(vectors: list[dict]) -> None:
         _ok(_client.post("/vectors/upsert", json={"vectors": vectors[i : i + 500]}))
 
 
-def query_vectors(vector: list[float], top_k: int, filter: dict | None = None) -> list[dict]:
-    body = {"vector": vector, "topK": top_k, "filter": filter}
+def query_vectors(vector: list[float], top_k: int) -> list[dict]:
+    body = {"vector": vector, "topK": top_k}
     return _ok(_client.post("/vectors/query", json=body)).json()["matches"]
 
 

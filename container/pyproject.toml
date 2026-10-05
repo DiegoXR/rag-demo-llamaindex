@@ -1,0 +1,13 @@
+[project]
+name = "rag-demo-llamaindex"
+version = "0.1.0"
+description = "The Python half of rag-demo-llamaindex: FastAPI + LlamaIndex, run in a Cloudflare Container."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "llama-index-core>=0.14.25",
+    "llama-index-llms-openai>=0.8.2",
+    "tiktoken>=0.14.0",
+    "uvicorn>=0.54.0",
+]

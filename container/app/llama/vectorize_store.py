@@ -14,7 +14,6 @@ from typing import Any
 from llama_index.core.schema import BaseNode, TextNode
 from llama_index.core.vector_stores.types import (
     BasePydanticVectorStore,
-    FilterOperator,
     VectorStoreQuery,
     VectorStoreQueryResult,
 )
@@ -57,9 +56,9 @@ class VectorizeVectorStore(BasePydanticVectorStore):
         bridge_client.delete_vectors(vector_ids(ref_doc_id, delete_kwargs.get("chunks", 0)))
 
     def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
-        matches = bridge_client.query_vectors(
-            query.query_embedding, query.similarity_top_k, self._to_vectorize_filter(query)
-        )
+        if query.filters:
+            raise NotImplementedError("VectorizeVectorStore does not support metadata filters")
+        matches = bridge_client.query_vectors(query.query_embedding, query.similarity_top_k)
         nodes, scores, ids = [], [], []
         for match in matches:
             meta = match.get("metadata") or {}
@@ -73,15 +72,3 @@ class VectorizeVectorStore(BasePydanticVectorStore):
             scores.append(match["score"])
             ids.append(match["id"])
         return VectorStoreQueryResult(nodes=nodes, similarities=scores, ids=ids)
-
-    @staticmethod
-    def _to_vectorize_filter(query: VectorStoreQuery) -> dict | None:
-        # Only equality on indexed metadata (doc_id) is supported.
-        if not query.filters:
-            return None
-        result = {}
-        for f in query.filters.filters:
-            if getattr(f, "operator", FilterOperator.EQ) != FilterOperator.EQ:
-                raise ValueError("VectorizeVectorStore supports only equality filters")
-            result[f.key] = f.value
-        return result

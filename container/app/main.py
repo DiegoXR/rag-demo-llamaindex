@@ -23,10 +23,14 @@ from typing import Literal
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from llama_index.core.agent.workflow import AgentStream
+from llama_index.core.llms import ChatMessage
 from pydantic import BaseModel
 
 from app import bridge_client
+from app.llama import engine
 from app.settings import (
+    MAX_AGENT_ITERATIONS,
     MAX_DOC_BYTES,
     MAX_DOCS,
     MAX_INPUT_CHARS,
@@ -36,19 +40,6 @@ from app.settings import (
 )
 
 app = FastAPI()
-
-# LlamaIndex (and its OpenAI client) import in a couple of seconds; loading it on
-# the first real request keeps /health fast right after a cold start.
-_engine = None
-
-
-def engine():
-    global _engine
-    if _engine is None:
-        from app.llama import engine as loaded
-
-        _engine = loaded
-    return _engine
 
 
 def log(event: str, **fields) -> None:
@@ -120,7 +111,7 @@ async def upload_document(request: Request, title: str):
         raise HTTPException(409, f"at most {MAX_DOCS} documents; delete one first")
 
     started = time.monotonic()
-    chunks = await asyncio.to_thread(engine().ingest, doc_id, title, text)
+    chunks = await asyncio.to_thread(engine.ingest, doc_id, title, text)
     replaced = doc_id in existing
     log("ingest", user=_user(request), doc_id=doc_id, bytes=len(body), chunks=chunks,
         replaced=replaced, ms=int((time.monotonic() - started) * 1000))
@@ -136,7 +127,7 @@ def list_documents():
 async def delete_document(request: Request, doc_id: str):
     if not re.fullmatch(r"[a-z0-9-]{1,50}", doc_id):
         raise HTTPException(404, "not found")
-    if not await asyncio.to_thread(engine().delete, doc_id):
+    if not await asyncio.to_thread(engine.delete, doc_id):
         raise HTTPException(404, "not found")
     log("delete", user=_user(request), doc_id=doc_id)
     return {"deleted": doc_id}
@@ -189,17 +180,14 @@ def _sources(nodes) -> list[dict]:
 
 
 async def _answer(messages: list[Message], user: str):
-    from llama_index.core.agent.workflow import AgentStream
-    from llama_index.core.llms import ChatMessage
-
     started = time.monotonic()
     # Off the event loop: the first build reads every document from R2 for the summary.
-    run = await asyncio.to_thread(engine().build_agent)
+    run = await asyncio.to_thread(engine.build_agent)
     history = [ChatMessage(role=m.role, content=m.content) for m in messages[:-1]]
     handler = run.agent.run(
         user_msg=messages[-1].content,
         chat_history=history,
-        max_iterations=engine().MAX_AGENT_ITERATIONS,
+        max_iterations=MAX_AGENT_ITERATIONS,
         early_stopping_method="generate",
     )
     status = "ok"

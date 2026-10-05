@@ -9,10 +9,10 @@
 // Routes (paths are relative to the bridge root):
 //   POST   /embed            {texts: string[]}            -> {vectors: number[][]}
 //   POST   /vectors/upsert   {vectors: [{id, values, metadata}]} -> {count}
-//   POST   /vectors/query    {vector, topK, filter?}       -> {matches}
+//   POST   /vectors/query    {vector, topK}                -> {matches}
 //   POST   /vectors/delete   {ids: string[]}               -> {count}
 //   GET    /docs                                           -> {docs: [{doc_id, title, chunks, size, uploaded}]}
-//   PUT    /docs/:id         markdown body, x-doc-title, x-doc-chunks headers
+//   PUT    /docs/:id         markdown body, x-doc-title (percent-encoded), x-doc-chunks headers
 //   GET    /docs/:id         -> markdown body
 //   DELETE /docs/:id
 //   *      /openai/*         -> https://api.openai.com/v1/* with the key added
@@ -41,8 +41,8 @@ export async function handleBridge(request, env, path) {
 	}
 
 	if (method === 'POST' && path === '/vectors/query') {
-		const { vector, topK, filter } = await request.json();
-		const result = await env.VECTORIZE.query(vector, { topK, filter, returnMetadata: 'all' });
+		const { vector, topK } = await request.json();
+		const result = await env.VECTORIZE.query(vector, { topK, returnMetadata: 'all' });
 		return Response.json({ matches: result.matches });
 	}
 

@@ -11,7 +11,7 @@ Answer:  a FunctionAgent with the conversation history and two tools —
 
 import asyncio
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import tiktoken
 from llama_index.core import Document, SummaryIndex, VectorStoreIndex
@@ -48,13 +48,20 @@ SYSTEM_PROMPT = (
     "Always answer in the language of the user's last message."
 )
 
-# Tool-call rounds per answer. One is the norm; the cap stops a confused agent from
-# looping (and spending) — on reaching it the agent is forced to answer.
-MAX_AGENT_ITERATIONS = 3
-
 
 def _splitters():
     return [MarkdownNodeParser(), SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)]
+
+
+def warm_up() -> None:
+    """Fetches what LlamaIndex would otherwise download on first use — the tiktoken
+    vocabularies and NLTK data used for splitting and token counting.
+
+    Run once while building the image (see Dockerfile): the container runs with no
+    internet access, so these must already be on disk.
+    """
+    tiktoken.encoding_for_model(LLM_MODEL)
+    IngestionPipeline(transformations=_splitters()).run(documents=[Document(text="# Warm up\n\nHello.")])
 
 
 # --- Ingest -------------------------------------------------------------------
@@ -132,8 +139,8 @@ class AgentRun:
 
     agent: FunctionAgent
     tokens: TokenCountingHandler
-    sources: list[NodeWithScore] = field(default_factory=list)
-    tools_used: list[str] = field(default_factory=list)
+    sources: list[NodeWithScore]
+    tools_used: list[str]
 
 
 def build_agent() -> AgentRun:
@@ -162,7 +169,8 @@ def build_agent() -> AgentRun:
         llm=llm, response_mode="tree_summarize"
     )
 
-    run = AgentRun(agent=None, tokens=token_counter)  # type: ignore[arg-type]
+    sources: list[NodeWithScore] = []
+    tools_used: list[str] = []
 
     # Tools return text for the agent and record their nodes as the answer's sources.
     # The work is blocking HTTP through the bridge, so it runs off the event loop.
@@ -171,23 +179,23 @@ def build_agent() -> AgentRun:
 
         `query` must be a standalone question, with any context from the
         conversation already filled in."""
-        run.tools_used.append("search_documents")
+        tools_used.append("search_documents")
         nodes = await asyncio.to_thread(retriever.retrieve, query)
-        run.sources.extend(nodes)
+        sources.extend(nodes)
         if not nodes:
             return "No documents matched."
         return "\n\n".join(f"[{n.node.metadata.get('title', '')}]\n{n.node.get_content()}" for n in nodes)
 
     async def summarize_documents(focus: str = "") -> str:
         """Summarize every uploaded document, optionally around a focus topic."""
-        run.tools_used.append("summarize_documents")
+        tools_used.append("summarize_documents")
         response = await asyncio.to_thread(
             summary_engine.query, f"Summarize the documents. Focus: {focus}" if focus else "Summarize the documents."
         )
-        run.sources.extend(response.source_nodes)
+        sources.extend(response.source_nodes)
         return str(response)
 
-    run.agent = FunctionAgent(
+    agent = FunctionAgent(
         tools=[
             FunctionTool.from_defaults(async_fn=search_documents),
             FunctionTool.from_defaults(async_fn=summarize_documents),
@@ -197,5 +205,5 @@ def build_agent() -> AgentRun:
     )
     # FunctionAgent resets the LLM's callback manager to the global default; the
     # agent and the summary engine share this one LLM, so restoring it here is enough.
-    run.agent.llm.callback_manager = callbacks
-    return run
+    agent.llm.callback_manager = callbacks
+    return AgentRun(agent=agent, tokens=token_counter, sources=sources, tools_used=tools_used)

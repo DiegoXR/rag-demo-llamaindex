@@ -1,5 +1,0 @@
-fastapi==0.142.2
-uvicorn==0.54.0
-httpx==0.28.1
-llama-index-core==0.14.25
-llama-index-llms-openai==0.8.2
