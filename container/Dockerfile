@@ -10,13 +10,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /bin/uv
 
 WORKDIR /app
 
-# BRIDGE_URL: the host the Container class intercepts (src/index.js) — the default
-# in app/settings.py is the local `wrangler dev` bridge.
+# RESOURCES_URL: the host the Container class intercepts (src/container.js) — the default
+# in app/settings.py is the local `wrangler dev` resource provider.
 #
 # The container runs with no internet access (enableInternet = false), so anything
 # LlamaIndex would download on first use — tiktoken vocabularies, NLTK data — is
 # fetched at build time (warm_up below) into these fixed paths.
-ENV BRIDGE_URL=http://bridge.internal \
+ENV RESOURCES_URL=http://resources.internal \
     TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     LLAMA_INDEX_CACHE_DIR=/app/.cache/llama_index \
     UV_COMPILE_BYTECODE=1 \
@@ -30,7 +30,7 @@ RUN uv sync --frozen --no-dev --no-cache
 COPY app ./app
 RUN python -c "from app.llama.engine import warm_up; warm_up()"
 
-# Must match defaultPort in the Container class (src/index.js).
+# Must match defaultPort in the Container class (src/container.js).
 EXPOSE 8080
 
 # Straight from the venv, not `uv run`: starts faster and never touches the network.

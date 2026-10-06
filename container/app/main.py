@@ -8,8 +8,8 @@ Endpoints (the shared contract every demo implements, plus document management):
   GET    /health                cheap, never calls the LLM
   GET    /meta
 
-This app knows nothing about Cloudflare beyond the bridge URL. The Worker in
-../../src/index.js is the only way to reach it, and it has already checked the
+This app knows nothing about Cloudflare beyond the resource provider URL. The Worker in
+../../src/gateway.js is the only way to reach it, and it has already checked the
 hub's token by the time a request arrives here.
 """
 
@@ -27,7 +27,7 @@ from llama_index.core.agent.workflow import AgentStream
 from llama_index.core.llms import ChatMessage
 from pydantic import BaseModel
 
-from app import bridge_client
+from app import resources_client
 from app.llama import engine
 from app.settings import (
     MAX_AGENT_ITERATIONS,
@@ -52,11 +52,11 @@ def _user(request: Request) -> str:
     return request.headers.get("x-hub-user", "unknown")
 
 
-# The bridge (Workers AI, Vectorize, R2) failing is an upstream failure: answer 502
+# The resource provider (Workers AI, Vectorize, R2) failing is an upstream failure: answer 502
 # with a readable message instead of FastAPI's bare 500.
 @app.exception_handler(httpx.HTTPError)
-async def bridge_failed(request: Request, exc: httpx.HTTPError):
-    log("bridge_error", path=request.url.path, error=type(exc).__name__, detail=str(exc)[:300])
+async def resource_failed(request: Request, exc: httpx.HTTPError):
+    log("resource_error", path=request.url.path, error=type(exc).__name__, detail=str(exc)[:300])
     return JSONResponse({"detail": "A storage or model service failed; try again."}, status_code=502)
 
 
@@ -106,7 +106,7 @@ async def upload_document(request: Request, title: str):
     except UnicodeDecodeError:
         raise HTTPException(400, "document must be UTF-8 markdown")
 
-    existing = {d["doc_id"] for d in await asyncio.to_thread(bridge_client.list_docs)}
+    existing = {d["doc_id"] for d in await asyncio.to_thread(resources_client.list_docs)}
     if doc_id not in existing and len(existing) >= MAX_DOCS:
         raise HTTPException(409, f"at most {MAX_DOCS} documents; delete one first")
 
@@ -120,7 +120,7 @@ async def upload_document(request: Request, title: str):
 
 @app.get("/documents")
 def list_documents():
-    return {"documents": bridge_client.list_docs()}
+    return {"documents": resources_client.list_docs()}
 
 
 @app.delete("/documents/{doc_id}")
@@ -181,17 +181,20 @@ def _sources(nodes) -> list[dict]:
 
 async def _answer(messages: list[Message], user: str):
     started = time.monotonic()
-    # Off the event loop: the first build reads every document from R2 for the summary.
-    run = await asyncio.to_thread(engine.build_agent)
-    history = [ChatMessage(role=m.role, content=m.content) for m in messages[:-1]]
-    handler = run.agent.run(
-        user_msg=messages[-1].content,
-        chat_history=history,
-        max_iterations=MAX_AGENT_ITERATIONS,
-        early_stopping_method="generate",
-    )
-    status = "ok"
+    status, run, handler = "ok", None, None
     try:
+        # Inside the try: the response has already started streaming, so a failure
+        # here (R2 unreachable while building the summary) must still end with an
+        # `error` event instead of a cut connection.
+        # Off the event loop: the first build reads every document from R2 for the summary.
+        run = await asyncio.to_thread(engine.build_agent)
+        history = [ChatMessage(role=m.role, content=m.content) for m in messages[:-1]]
+        handler = run.agent.run(
+            user_msg=messages[-1].content,
+            chat_history=history,
+            max_iterations=MAX_AGENT_ITERATIONS,
+            early_stopping_method="generate",
+        )
         async with asyncio.timeout(TIMEOUT_S):
             async for event in handler.stream_events():
                 # Text deltas of the final answer. While the agent is only choosing a
@@ -218,10 +221,12 @@ async def _answer(messages: list[Message], user: str):
     finally:
         # Timeout, error, or the hub aborting (the user left): stop the agent so an
         # answer nobody will read stops spending tokens.
-        if not handler.done():
+        if handler is not None and not handler.done():
             status = "cancelled" if status == "ok" else status
             await handler.cancel_run()
-        log("chat", user=user, status=status, messages=len(messages), tools=run.tools_used,
-            sources=len(run.sources), input_tokens=run.tokens.prompt_llm_token_count,
-            output_tokens=run.tokens.completion_llm_token_count,
+        # `run` is None when building the agent itself failed.
+        log("chat", user=user, status=status, messages=len(messages),
+            tools=run.tools_used if run else [], sources=len(run.sources) if run else 0,
+            input_tokens=run.tokens.prompt_llm_token_count if run else 0,
+            output_tokens=run.tokens.completion_llm_token_count if run else 0,
             ms=int((time.monotonic() - started) * 1000))

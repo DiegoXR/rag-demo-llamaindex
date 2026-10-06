@@ -1,4 +1,4 @@
-"""LlamaIndex vector store backed by Cloudflare Vectorize, through the bridge.
+"""LlamaIndex vector store backed by Cloudflare Vectorize, through the resource provider.
 
 Each chunk is one Vectorize vector. Its text and title travel in the vector's
 metadata, so no separate docstore is needed: a query returns everything required
@@ -18,7 +18,7 @@ from llama_index.core.vector_stores.types import (
     VectorStoreQueryResult,
 )
 
-from app import bridge_client
+from app import resources_client
 from app.settings import MAX_METADATA_TEXT_BYTES
 
 
@@ -48,17 +48,17 @@ class VectorizeVectorStore(BasePydanticVectorStore):
                     },
                 }
             )
-        bridge_client.upsert_vectors(vectors)
+        resources_client.upsert_vectors(vectors)
         return [v["id"] for v in vectors]
 
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """Deletes a document's vectors. Needs `chunks`, the count stored in R2."""
-        bridge_client.delete_vectors(vector_ids(ref_doc_id, delete_kwargs.get("chunks", 0)))
+        resources_client.delete_vectors(vector_ids(ref_doc_id, delete_kwargs.get("chunks", 0)))
 
     def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
         if query.filters:
             raise NotImplementedError("VectorizeVectorStore does not support metadata filters")
-        matches = bridge_client.query_vectors(query.query_embedding, query.similarity_top_k)
+        matches = resources_client.query_vectors(query.query_embedding, query.similarity_top_k)
         nodes, scores, ids = [], [], []
         for match in matches:
             meta = match.get("metadata") or {}

@@ -6,10 +6,10 @@ reasonable (see "Cost limits inside the demo" in the portfolio plan).
 
 import os
 
-# The bridge (src/bridge.js): the Worker serves these requests with its bindings.
-# The default is local development (`npm run dev:bridge`); the Dockerfile sets
-# http://bridge.internal, the host the Container class intercepts in production.
-BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8787/__bridge").rstrip("/")
+# The resource provider (src/resources.js): the Worker serves these requests with its bindings.
+# The default is local development (`npm run dev:resources`); the Dockerfile sets
+# http://resources.internal, the host the Container class intercepts in production.
+RESOURCES_URL = os.environ.get("RESOURCES_URL", "http://localhost:8787/__resources").rstrip("/")
 
 # Passed by the Worker at start time from wrangler.jsonc `vars`, so a model change
 # never needs a new image.

@@ -1,6 +1,6 @@
-"""HTTP client for the bridge (src/bridge.js): Workers AI, Vectorize and R2.
+"""HTTP client for the resource provider (src/resources.js): Workers AI, Vectorize and R2.
 
-Inside Cloudflare, requests to http://bridge.internal never leave the machine: the
+Inside Cloudflare, requests to http://resources.internal never leave the machine: the
 Worker intercepts them and answers with its bindings. Nothing here holds a key.
 """
 
@@ -9,9 +9,9 @@ from urllib.parse import quote, unquote
 
 import httpx
 
-from app.settings import BRIDGE_URL, TIMEOUT_S
+from app.settings import RESOURCES_URL, TIMEOUT_S
 
-_client = httpx.Client(base_url=BRIDGE_URL, timeout=TIMEOUT_S)
+_client = httpx.Client(base_url=RESOURCES_URL, timeout=TIMEOUT_S)
 
 
 @dataclass

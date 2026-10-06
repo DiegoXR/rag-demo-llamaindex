@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:bridge": "wrangler dev --port 8787 --var LOCAL_BRIDGE:1",
+    "dev:resources": "wrangler dev --port 8787 --var LOCAL_RESOURCES:1",
     "dev:api": "cd container && uv run uvicorn app.main:app --reload --port 8080",
+    "chat": "cd container && uv run python -m scripts.chat",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
   },

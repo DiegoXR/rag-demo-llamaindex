@@ -23,11 +23,11 @@ from llama_index.core.schema import NodeWithScore
 from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
 
-from app import bridge_client
+from app import resources_client
 from app.llama.embedding import WorkersAIEmbedding
 from app.llama.vectorize_store import VectorizeVectorStore, vector_ids
 from app.settings import (
-    BRIDGE_URL,
+    RESOURCES_URL,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     LLM_MODEL,
@@ -69,7 +69,7 @@ def warm_up() -> None:
 
 def ingest(doc_id: str, title: str, text: str) -> int:
     """Indexes one document, replacing any previous version with the same id."""
-    previous = bridge_client.get_doc(doc_id)
+    previous = resources_client.get_doc(doc_id)
 
     document = Document(id_=doc_id, text=text, metadata={"doc_id": doc_id, "title": title})
     # Keep doc_id out of what gets embedded; the title stays in, it helps retrieval.
@@ -81,18 +81,18 @@ def ingest(doc_id: str, title: str, text: str) -> int:
     vector_store.add(nodes)
     # A shorter new version leaves stale tail vectors behind; remove them.
     if previous and previous.chunks > len(nodes):
-        bridge_client.delete_vectors(vector_ids(doc_id, previous.chunks)[len(nodes) :])
-    bridge_client.put_doc(doc_id, title, len(nodes), text)
+        resources_client.delete_vectors(vector_ids(doc_id, previous.chunks)[len(nodes) :])
+    resources_client.put_doc(doc_id, title, len(nodes), text)
     _invalidate_summary()
     return len(nodes)
 
 
 def delete(doc_id: str) -> bool:
-    stored = bridge_client.get_doc(doc_id)
+    stored = resources_client.get_doc(doc_id)
     if stored is None:
         return False
     vector_store.delete(doc_id, chunks=stored.chunks)
-    bridge_client.delete_doc(doc_id)
+    resources_client.delete_doc(doc_id)
     _invalidate_summary()
     return True
 
@@ -115,10 +115,10 @@ def _summary_index_nodes():
     with _summary_lock:
         if _summary_nodes is None:
             documents, budget = [], MAX_SUMMARY_CHARS
-            for meta in bridge_client.list_docs():
+            for meta in resources_client.list_docs():
                 if budget <= 0:
                     break
-                stored = bridge_client.get_doc(meta["doc_id"])
+                stored = resources_client.get_doc(meta["doc_id"])
                 if stored is None:
                     continue
                 text = stored.text[:budget]
@@ -153,9 +153,9 @@ def build_agent() -> AgentRun:
     callbacks = CallbackManager([token_counter])
     llm = OpenAI(
         model=LLM_MODEL,
-        # The bridge adds the real key on its way to api.openai.com.
-        api_base=f"{BRIDGE_URL}/openai",
-        api_key="added-by-the-bridge",
+        # The resource provider adds the real key on its way to api.openai.com.
+        api_base=f"{RESOURCES_URL}/openai",
+        api_key="added-by-the-resource-provider",
         max_tokens=MAX_TOKENS,
         timeout=TIMEOUT_S,
         max_retries=1,
@@ -173,7 +173,7 @@ def build_agent() -> AgentRun:
     tools_used: list[str] = []
 
     # Tools return text for the agent and record their nodes as the answer's sources.
-    # The work is blocking HTTP through the bridge, so it runs off the event loop.
+    # The work is blocking HTTP through the resource provider, so it runs off the event loop.
     async def search_documents(query: str) -> str:
         """Search the documents for passages relevant to a specific question.
 

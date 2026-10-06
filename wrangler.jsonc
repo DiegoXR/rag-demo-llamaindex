@@ -22,10 +22,14 @@
 		"LLM_MODEL": "gpt-4o-mini",
 		// Multilingual, 1024 dimensions — must match the Vectorize index. Changing it
 		// means re-indexing every document (the originals are kept in R2 for that).
-		"EMBED_MODEL": "@cf/baai/bge-m3"
+		"EMBED_MODEL": "@cf/baai/bge-m3",
+		// AI Gateway every model call goes through (src/resources.js). Created on the
+		// dashboard (AI → AI Gateway); its logs, cost analytics and rate limit belong to
+		// this demo alone. Reached through the AI binding, so no gateway token is needed.
+		"AI_GATEWAY_ID": "rag-demo-llamaindex"
 	},
 
-	// Bindings used by the bridge (src/bridge.js) on behalf of the container.
+	// Bindings used by the resource provider (src/resources.js) on behalf of the container.
 	"ai": { "binding": "AI", "remote": true },
 	"vectorize": [{ "binding": "VECTORIZE", "index_name": "rag-demo-llamaindex", "remote": true }],
 	"r2_buckets": [{ "binding": "DOCS", "bucket_name": "rag-demo-llamaindex-docs", "remote": true }],
@@ -68,7 +72,7 @@
 	},
 
 	// Windows cannot run containers under `wrangler dev`; locally the Worker only
-	// serves the bridge (see LOCAL_BRIDGE in src/index.js) and FastAPI runs on uvicorn.
+	// serves the resource provider (see LOCAL_RESOURCES in src/index.js) and FastAPI runs on uvicorn.
 	"dev": {
 		"enable_containers": false
 	}
