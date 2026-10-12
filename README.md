@@ -77,8 +77,20 @@ container/
   app/resources_client.py   HTTP client for the resource provider
   app/settings.py   every limit and model name
   scripts/chat.py   terminal chat client for local development (not in the image)
-wrangler.jsonc      container, Durable Object, bindings, secrets — no public URL
+wrangler.example.jsonc  template for wrangler.jsonc: container, Durable Object, bindings,
+                        secrets — no public URL
 ```
+
+## Set up your own copy
+
+The Cloudflare configuration is published as a template, without account or Secrets Store IDs. Copy it and fill in your own:
+
+```bash
+cp wrangler.example.jsonc wrangler.jsonc     # git-ignored: your IDs stay on your machine
+npx wrangler secrets-store store list --remote   # your Secrets Store ID → replace <YOUR_SECRETS_STORE_ID>
+```
+
+Optionally, uncomment `account_id` and set it to yours (`npx wrangler whoami`).
 
 ## Run locally
 
@@ -91,7 +103,7 @@ Prerequisites:
 - The OpenAI key in the **local** Secrets Store, which `wrangler dev` cannot read from production. Create it once:
 
   ```bash
-  npx wrangler secrets-store secret create <store_id> --name OPENAI_TOKEN --scopes workers
+  npx wrangler secrets-store secret create <YOUR_SECRETS_STORE_ID> --name OPENAI_TOKEN --scopes workers
   ```
 
 Then, in three terminals:

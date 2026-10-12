@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 .env
 .dev.vars
+
+# Your own config, with your account and Secrets Store IDs. The public
+# template is wrangler.example.jsonc.
+wrangler.jsonc

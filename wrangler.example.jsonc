@@ -1,10 +1,16 @@
 // rag-demo-llamaindex — a Worker in front of a Python container running LlamaIndex.
+//
+// TEMPLATE. Copy it to wrangler.jsonc (git-ignored) and fill in your own IDs:
+//   cp wrangler.example.jsonc wrangler.jsonc
+// Then replace every <YOUR_SECRETS_STORE_ID> (dashboard: Secrets Store, or
+// `npx wrangler secrets-store store list --remote`).
 // Docs: https://developers.cloudflare.com/containers/
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "rag-demo-llamaindex",
-	// Pinned: a command run from another login fails instead of deploying elsewhere.
-	"account_id": "4f4d0336b4b7bbf176c4a4e3ca67072f",
+	// Optional: pin your account so a command run from another login fails instead
+	// of deploying elsewhere (`npx wrangler whoami` shows the ID).
+	// "account_id": "<YOUR_ACCOUNT_ID>",
 	"main": "src/index.js",
 	// Cannot be newer than the workerd bundled with the installed wrangler.
 	"compatibility_date": "2026-09-15",
@@ -19,6 +25,9 @@
 	"preview_urls": false,
 
 	"vars": {
+		// An OpenAI chat model with tool calling. Also change the default in
+		// container/app/settings.py, which local development uses (uvicorn does not
+		// read this file); a mismatch shows up as 403 "model not allowed".
 		"LLM_MODEL": "gpt-4o-mini",
 		// Multilingual, 1024 dimensions — must match the Vectorize index. Changing it
 		// means re-indexing every document (the originals are kept in R2 for that).
@@ -37,10 +46,10 @@
 	// `wrangler dev` cannot read the production store; it uses a local one kept in
 	// this project's .wrangler/state. Fill it once, from this folder (wrangler
 	// prompts for the value):
-	//   npx wrangler secrets-store secret create f3dd1787ab7448659671ef084d44a023 --name OPENAI_TOKEN --scopes workers
+	//   npx wrangler secrets-store secret create <YOUR_SECRETS_STORE_ID> --name OPENAI_TOKEN --scopes workers
 	"secrets_store_secrets": [
-		{ "binding": "OPENAI_API_KEY", "store_id": "f3dd1787ab7448659671ef084d44a023", "secret_name": "OPENAI_TOKEN" },
-		{ "binding": "HUB_TOKEN", "store_id": "f3dd1787ab7448659671ef084d44a023", "secret_name": "HUB_TOKEN" }
+		{ "binding": "OPENAI_API_KEY", "store_id": "<YOUR_SECRETS_STORE_ID>", "secret_name": "OPENAI_TOKEN" },
+		{ "binding": "HUB_TOKEN", "store_id": "<YOUR_SECRETS_STORE_ID>", "secret_name": "HUB_TOKEN" }
 	],
 
 	// Three blocks make a container, and they must agree on one class name:

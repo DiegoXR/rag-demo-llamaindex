@@ -12,7 +12,9 @@ import os
 RESOURCES_URL = os.environ.get("RESOURCES_URL", "http://localhost:8787/__resources").rstrip("/")
 
 # Passed by the Worker at start time from wrangler.jsonc `vars`, so a model change
-# never needs a new image.
+# never needs a new image. The default is only for local development (uvicorn does
+# not read wrangler.jsonc): KEEP IT EQUAL to LLM_MODEL there. If they differ, the
+# resource provider answers 403 "model not allowed" on the first question.
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 
 # Chat limits.

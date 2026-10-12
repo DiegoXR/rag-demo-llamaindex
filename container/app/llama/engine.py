@@ -49,6 +49,10 @@ SYSTEM_PROMPT = (
 )
 
 
+# o200k_base: gpt-4o, gpt-4.1, o-series · cl100k_base: gpt-4, gpt-3.5-turbo.
+TOKENIZER_ENCODINGS = ("o200k_base", "cl100k_base")
+
+
 def _splitters():
     return [MarkdownNodeParser(), SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)]
 
@@ -59,8 +63,14 @@ def warm_up() -> None:
 
     Run once while building the image (see Dockerfile): the container runs with no
     internet access, so these must already be on disk.
+
+    Both OpenAI tokenizers are cached, not just LLM_MODEL's: the build sees only the
+    default from settings.py, while the running container gets wrangler.jsonc's
+    value. Any OpenAI chat model uses one of these two, so changing LLM_MODEL never
+    needs a tokenizer the image lacks.
     """
-    tiktoken.encoding_for_model(LLM_MODEL)
+    for encoding in TOKENIZER_ENCODINGS:
+        tiktoken.get_encoding(encoding)
     IngestionPipeline(transformations=_splitters()).run(documents=[Document(text="# Warm up\n\nHello.")])
 
 
